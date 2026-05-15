@@ -1,0 +1,17 @@
+{
+  "name": "ai-assistant-mascot",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:mascot": "npm --workspace @assistant/mascot run dev",
+    "dev:controller": "npm --workspace @assistant/controller run dev",
+    "dev:server": "npm --workspace @assistant/server run dev",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  }
+}
+
