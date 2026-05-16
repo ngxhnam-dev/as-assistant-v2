@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EVENTS, createSessionId } from "@assistant/shared";
+import { EVENTS, createClientId, createSessionId } from "@assistant/shared";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8787";
-const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8787/ws";
+const DEFAULT_HOST =
+  typeof window !== "undefined" ? window.location.hostname : "localhost";
+const DEFAULT_PROTOCOL =
+  typeof window !== "undefined" && window.location.protocol === "https:"
+    ? "https"
+    : "http";
+const DEFAULT_WS_PROTOCOL = DEFAULT_PROTOCOL === "https" ? "wss" : "ws";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
+const WS_URL =
+  import.meta.env.VITE_WS_URL || `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
 const SpeechRecognition =
   window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -59,7 +69,7 @@ export default function App() {
           setMessages((current) => [
             ...current,
             {
-              id: crypto.randomUUID(),
+              id: createClientId(),
               role: "user",
               text: data?.text || ""
             }
@@ -72,7 +82,7 @@ export default function App() {
           setMessages((current) => [
             ...current,
             {
-              id: crypto.randomUUID(),
+              id: createClientId(),
               role: "assistant",
               text: data?.text || ""
             }
@@ -115,7 +125,7 @@ export default function App() {
 
     try {
       console.log("[controller] optimistic thinking", { sessionId });
-      await fetch(`${API_BASE_URL}/api/realtime/publish`, {
+      const publishResponse = await fetch(`${API_BASE_URL}/api/realtime/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -127,9 +137,10 @@ export default function App() {
           }
         })
       });
+      await ensureOkResponse(publishResponse, "realtime publish");
 
       console.log("[controller] requesting stop", { sessionId });
-      await fetch(`${API_BASE_URL}/api/stop`, {
+      const stopResponse = await fetch(`${API_BASE_URL}/api/stop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -137,6 +148,7 @@ export default function App() {
           silent: true
         })
       });
+      await ensureOkResponse(stopResponse, "stop");
 
       console.log("[controller] requesting chat", {
         sessionId,
@@ -161,13 +173,14 @@ export default function App() {
       console.log("[controller] chat success", payload);
     } catch (requestError) {
       console.log("[controller] chat error", requestError);
-      setError(requestError.message);
+      const detailedMessage = formatRequestError(requestError);
+      setError(detailedMessage);
       setMessages((current) => [
         ...current,
         {
-          id: crypto.randomUUID(),
+          id: createClientId(),
           role: "system",
-          text: `Error: ${requestError.message}`
+          text: `Error: ${detailedMessage}`
         }
       ]);
     } finally {
@@ -270,6 +283,50 @@ export default function App() {
     }, 2000);
   }
 
+  async function skipVoice() {
+    console.log("[controller] skip voice", { sessionId });
+    try {
+      const stopResponse = await fetch(`${API_BASE_URL}/api/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          silent: false
+        })
+      });
+
+      await ensureOkResponse(stopResponse, "skip voice");
+    } catch (requestError) {
+      console.log("[controller] skip voice error", requestError);
+      setError(formatRequestError(requestError));
+    }
+  }
+
+  async function ensureOkResponse(response, step) {
+    if (response.ok) {
+      return;
+    }
+
+    let details = "";
+    try {
+      details = await response.text();
+    } catch {
+      details = "";
+    }
+
+    throw new Error(
+      `[${step}] HTTP ${response.status} ${response.statusText}${details ? ` - ${details}` : ""}`
+    );
+  }
+
+  function formatRequestError(error) {
+    if (error instanceof TypeError && error.message === "Failed to fetch") {
+      return `Network/CORS error while calling ${API_BASE_URL}. Kiem tra tab Network va console server de xem request nao bi chan.`;
+    }
+
+    return error?.message || "Unknown request error.";
+  }
+
   return (
     <main className="controller-shell">
       <section className="controller-panel">
@@ -319,6 +376,9 @@ export default function App() {
               {isSending ? "Dang gui..." : "Gui"}
             </button>
           </div>
+          <button type="button" className="skip-button" onClick={skipVoice}>
+            Skip voice
+          </button>
         </form>
 
         {error ? <p className="error-banner">{error}</p> : null}

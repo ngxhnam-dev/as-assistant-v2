@@ -38,15 +38,35 @@ const wss = new WebSocketServer({ server, path: wsPath });
 const elevenlabs = new ElevenLabsClient({
   apiKey: process.env.ELEVENLABS_API_KEY
 });
-
-app.use(
-  cors({
-    origin: [
-      process.env.MASCOT_ORIGIN || "http://localhost:5173",
-      process.env.CONTROLLER_ORIGIN || "http://localhost:5174"
-    ]
-  })
+const allowedOrigins = new Set(
+  [
+    process.env.MASCOT_ORIGIN,
+    process.env.CONTROLLER_ORIGIN,
+    "http://localhost:5173",
+    "http://localhost:5174"
+  ].filter(Boolean)
 );
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.has(origin) || isAllowedLanOrigin(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn("[cors] blocked origin", origin);
+    return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => {
@@ -306,6 +326,22 @@ async function callDify({ message, conversationId, signal }) {
   }
 
   return response.json();
+}
+
+function isAllowedLanOrigin(origin) {
+  try {
+    const { hostname, protocol } = new URL(origin);
+    const isHttp = protocol === "http:" || protocol === "https:";
+    const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+    const isPrivateIpv4 =
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname);
+
+    return isHttp && (isLocalhost || isPrivateIpv4);
+  } catch {
+    return false;
+  }
 }
 
 wss.on("connection", (socket) => {

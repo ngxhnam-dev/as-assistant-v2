@@ -1,0 +1,37 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8787:8787"
+
+  mascot:
+    build:
+      context: .
+      dockerfile: apps/mascot/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_WS_URL: ${VITE_WS_URL:-}
+        VITE_IDLE_VIDEO_URL: ${VITE_IDLE_VIDEO_URL:-/video/idle.mp4}
+        VITE_THINKING_VIDEO_URL: ${VITE_THINKING_VIDEO_URL:-/video/thinking.mp4}
+        VITE_SPEAKING_VIDEO_URL: ${VITE_SPEAKING_VIDEO_URL:-/video/speaking.mp4}
+    depends_on:
+      - server
+    ports:
+      - "5173:80"
+
+  controller:
+    build:
+      context: .
+      dockerfile: apps/controller/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_WS_URL: ${VITE_WS_URL:-}
+    depends_on:
+      - server
+    ports:
+      - "5174:80"
+

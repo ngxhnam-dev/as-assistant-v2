@@ -11,7 +11,10 @@
     "dev:controller": "npm --workspace @assistant/controller run dev",
     "dev:server": "npm --workspace @assistant/server run dev",
     "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   }
 }
 

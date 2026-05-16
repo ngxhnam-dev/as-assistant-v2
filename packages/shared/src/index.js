@@ -13,5 +13,16 @@ export const EVENTS = {
 };
 
 export function createSessionId() {
-  return `session-${Math.random().toString(36).slice(2, 10)}`;
+  return `session-${createClientId()}`;
+}
+
+export function createClientId() {
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return [
+    Date.now().toString(36),
+    Math.random().toString(36).slice(2, 10)
+  ].join("-");
 }

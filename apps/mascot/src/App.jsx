@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { EVENTS, MASCOT_STATES } from "@assistant/shared";
+import { EVENTS, MASCOT_STATES, createClientId } from "@assistant/shared";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8787";
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8787/ws";
@@ -18,13 +18,14 @@ export default function App() {
   const [activeState, setActiveState] = useState(MASCOT_STATES.IDLE);
   const [lastText, setLastText] = useState("");
   const [messages, setMessages] = useState([]);
+  const [showAudioUnlock, setShowAudioUnlock] = useState(false);
   const audioRef = useRef(null);
   const wsRef = useRef(null);
   const historyRef = useRef(null);
+  const videoRefs = useRef({});
   const pendingSpeechRef = useRef("");
   const isAudioPrimedRef = useRef(false);
   const pendingAssistantMessageRef = useRef("");
-  const typingTimerRef = useRef(null);
 
   useEffect(() => {
     const container = historyRef.current;
@@ -36,12 +37,8 @@ export default function App() {
   }, [messages]);
 
   useEffect(() => {
-    return () => {
-      if (typingTimerRef.current) {
-        clearInterval(typingTimerRef.current);
-      }
-    };
-  }, []);
+    syncVideoPlaybackState();
+  }, [activeState]);
 
   useEffect(() => {
     attemptAudioPrime();
@@ -93,7 +90,7 @@ export default function App() {
             setMessages((current) => [
               ...current,
               {
-                id: crypto.randomUUID(),
+                id: createClientId(),
                 role: "user",
                 text
               }
@@ -124,10 +121,6 @@ export default function App() {
           console.log("[mascot] stop response");
           pendingSpeechRef.current = "";
           pendingAssistantMessageRef.current = "";
-          if (typingTimerRef.current) {
-            clearInterval(typingTimerRef.current);
-            typingTimerRef.current = null;
-          }
           stopAudio();
           setStatus("Interrupted");
           setActiveState(MASCOT_STATES.IDLE);
@@ -159,6 +152,7 @@ export default function App() {
     try {
       await audio.play();
       isAudioPrimedRef.current = true;
+      setShowAudioUnlock(false);
       console.log("[mascot] audio primed");
       setStatus("Audio ready");
     } catch (error) {
@@ -184,6 +178,30 @@ export default function App() {
     audio.load();
   }
 
+  function syncVideoPlaybackState() {
+    const idleVideo = videoRefs.current[MASCOT_STATES.IDLE];
+    const thinkingVideo = videoRefs.current[MASCOT_STATES.THINKING];
+    const speakingVideo = videoRefs.current[MASCOT_STATES.SPEAKING];
+
+    if (idleVideo) {
+      idleVideo.muted = !(activeState === MASCOT_STATES.IDLE && isAudioPrimedRef.current);
+      if (activeState === MASCOT_STATES.IDLE) {
+        idleVideo.currentTime = 0;
+        idleVideo.play().catch((error) => {
+          console.log("[mascot] idle video play blocked", error);
+        });
+      }
+    }
+
+    if (thinkingVideo) {
+      thinkingVideo.muted = true;
+    }
+
+    if (speakingVideo) {
+      speakingVideo.muted = true;
+    }
+  }
+
   async function tryPlayPendingSpeech() {
     if (!pendingSpeechRef.current) {
       return;
@@ -203,9 +221,13 @@ export default function App() {
     try {
       await audio.play();
       pendingSpeechRef.current = "";
+      setShowAudioUnlock(false);
     } catch (error) {
       console.log("[mascot] pending speech blocked", error);
       setStatus("Audio waiting for browser permission");
+      if (error.name === "NotAllowedError") {
+        setShowAudioUnlock(true);
+      }
     }
   }
 
@@ -218,42 +240,49 @@ export default function App() {
     void tryPlayPendingSpeech();
   }
 
-  function startAssistantTyping(fullText) {
+  function showAssistantMessage(fullText) {
     if (!fullText) {
       return;
     }
 
-    if (typingTimerRef.current) {
-      clearInterval(typingTimerRef.current);
-    }
-
-    const messageId = crypto.randomUUID();
-    let visibleLength = 0;
-
     setMessages((current) => [
       ...current,
       {
-        id: messageId,
+        id: createClientId(),
         role: "assistant",
-        text: ""
+        text: fullText
       }
     ]);
+  }
 
-    typingTimerRef.current = setInterval(() => {
-      visibleLength += 1;
-      const nextText = fullText.slice(0, visibleLength);
+  async function handleAudioUnlock() {
+    console.log("[mascot] manual audio unlock");
 
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === messageId ? { ...message, text: nextText } : message
-        )
-      );
+    const audio = audioRef.current;
+    const text = pendingSpeechRef.current;
+    if (!audio || !text) {
+      await attemptAudioPrime();
+      return;
+    }
 
-      if (visibleLength >= fullText.length) {
-        clearInterval(typingTimerRef.current);
-        typingTimerRef.current = null;
+    stopAudio();
+    setStatus("Preparing audio stream");
+    audio.muted = false;
+    audio.src = `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`;
+
+    try {
+      await audio.play();
+      isAudioPrimedRef.current = true;
+      pendingSpeechRef.current = "";
+      setShowAudioUnlock(false);
+    } catch (error) {
+      console.log("[mascot] manual unlock play failed", error);
+      setStatus("Audio waiting for browser permission");
+      if (pendingAssistantMessageRef.current) {
+        showAssistantMessage(pendingAssistantMessageRef.current);
+        pendingAssistantMessageRef.current = "";
       }
-    }, 28);
+    }
   }
 
   return (
@@ -262,11 +291,16 @@ export default function App() {
         {Object.entries(VIDEO_SOURCES).map(([state, src]) => (
           <video
             key={state}
+            ref={(node) => {
+              if (node) {
+                videoRefs.current[state] = node;
+              }
+            }}
             className={`mascot-video ${activeState === state ? "is-visible" : ""}`}
             src={src}
             autoPlay
             loop
-            muted
+            muted={state !== MASCOT_STATES.IDLE}
             playsInline
           />
         ))}
@@ -281,6 +315,11 @@ export default function App() {
           </article>
         ))}
       </div>
+      {showAudioUnlock ? (
+        <button type="button" className="audio-unlock-button" onClick={handleAudioUnlock}>
+          Tap to enable voice
+        </button>
+      ) : null}
       <audio
         ref={audioRef}
         preload="none"
@@ -290,7 +329,7 @@ export default function App() {
         onPlaying={() => {
           console.log("[mascot] audio onPlaying");
           if (pendingAssistantMessageRef.current) {
-            startAssistantTyping(pendingAssistantMessageRef.current);
+            showAssistantMessage(pendingAssistantMessageRef.current);
             pendingAssistantMessageRef.current = "";
           }
           setStatus("Speaking");

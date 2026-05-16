@@ -31,7 +31,7 @@ body {
 
 .video-stage {
   position: relative;
-  aspect-ratio: 9 / 16;
+  width: 50%;
   height: 70%;
   margin-bottom: 10%;
 }
@@ -64,16 +64,32 @@ body {
   position: absolute;
   background: #9fc6d598;
   top: 25%;
-  left: 50%;
+  left: 45%;
   right: 5%;
   bottom: 20%;
   z-index: 10;
-  border-radius: 5%;
+  border-radius: 2rem;
   display: flex;
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
   padding: 18px 14px;
+}
+
+.audio-unlock-button {
+  position: absolute;
+  left: 50%;
+  bottom: 8%;
+  transform: translateX(-50%);
+  z-index: 20;
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 20px;
+  background: linear-gradient(180deg, #24247b, #1d3cbf);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  box-shadow: 0 12px 30px rgba(36, 36, 123, 0.22);
 }
 
 .history-message {

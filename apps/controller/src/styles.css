@@ -172,6 +172,19 @@ body {
   cursor: default;
 }
 
+.skip-button {
+  justify-self: center;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #24247b;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(36, 36, 123, 0.08);
+}
+
 .error-banner {
   margin: 0;
   color: #a01d3f;
