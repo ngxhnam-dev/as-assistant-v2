@@ -1,11 +1,16 @@
 export const MASCOT_STATES = {
   IDLE: "idle",
+  LISTENING: "listening",
   THINKING: "thinking",
-  SPEAKING: "speaking"
+  I_GOT_IT: "i_got_it",
+  SPEAKING: "speaking",
+  THANKS_FOR_LISTENING: "thanks_for_listening"
 };
 
 export const EVENTS = {
   USER_MESSAGE: "USER_MESSAGE",
+  SET_LISTENING: "SET_LISTENING",
+  SET_IDLE: "SET_IDLE",
   SET_THINKING: "SET_THINKING",
   SEND_RESPONSE: "SEND_RESPONSE",
   STOP_RESPONSE: "STOP_RESPONSE",

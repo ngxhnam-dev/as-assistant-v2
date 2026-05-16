@@ -1,14 +1,36 @@
 import { useEffect, useRef, useState } from "react";
 import { EVENTS, MASCOT_STATES, createClientId } from "@assistant/shared";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8787";
-const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8787/ws";
+const DEFAULT_HOST =
+  typeof window !== "undefined" ? window.location.hostname : "localhost";
+const DEFAULT_PROTOCOL =
+  typeof window !== "undefined" && window.location.protocol === "https:"
+    ? "https"
+    : "http";
+const DEFAULT_WS_PROTOCOL = DEFAULT_PROTOCOL === "https" ? "wss" : "ws";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
+const WS_URL =
+  import.meta.env.VITE_WS_URL || `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
+const LOOPING_STATES = new Set([
+  MASCOT_STATES.IDLE,
+  MASCOT_STATES.LISTENING,
+  MASCOT_STATES.THINKING,
+  MASCOT_STATES.SPEAKING
+]);
 
 const VIDEO_SOURCES = {
   [MASCOT_STATES.IDLE]:
     "/video/idle.mp4",
+  [MASCOT_STATES.LISTENING]:
+    "/video/listening.mp4",
   [MASCOT_STATES.THINKING]:
     "/video/thinking.mp4",
+  [MASCOT_STATES.I_GOT_IT]:
+    "/video/i_got_it.mp4",
+  [MASCOT_STATES.THANKS_FOR_LISTENING]:
+    "/video/thanks_for_listening.mp4",
   [MASCOT_STATES.SPEAKING]:
     "/video/speaking.mp4"
 };
@@ -26,6 +48,10 @@ export default function App() {
   const pendingSpeechRef = useRef("");
   const isAudioPrimedRef = useRef(false);
   const pendingAssistantMessageRef = useRef("");
+  const preparedSpeechTextRef = useRef("");
+  const preparedSpeechUrlRef = useRef("");
+  const speechFetchControllerRef = useRef(null);
+  const speechPreparePromiseRef = useRef(null);
 
   useEffect(() => {
     const container = historyRef.current;
@@ -99,8 +125,30 @@ export default function App() {
           return;
         }
 
+        if (type === EVENTS.SET_LISTENING) {
+          console.log("[mascot] set listening");
+          pendingAssistantMessageRef.current = "";
+          pendingSpeechRef.current = "";
+          stopAudio();
+          setStatus("Listening...");
+          setActiveState(MASCOT_STATES.LISTENING);
+          return;
+        }
+
+        if (type === EVENTS.SET_IDLE) {
+          console.log("[mascot] set idle");
+          pendingAssistantMessageRef.current = "";
+          pendingSpeechRef.current = "";
+          stopAudio();
+          setStatus("Idle");
+          setActiveState(MASCOT_STATES.IDLE);
+          return;
+        }
+
         if (type === EVENTS.SET_THINKING) {
           console.log("[mascot] set thinking");
+          pendingAssistantMessageRef.current = "";
+          pendingSpeechRef.current = "";
           stopAudio();
           setStatus("Thinking...");
           setActiveState(MASCOT_STATES.THINKING);
@@ -113,7 +161,17 @@ export default function App() {
           console.log("[mascot] response received", text);
           pendingAssistantMessageRef.current = text;
           pendingSpeechRef.current = text;
-          void tryPlayPendingSpeech();
+          setStatus("Preparing audio stream");
+          void (async () => {
+            await prepareSpeechAudio(text);
+
+            if (pendingSpeechRef.current !== text || !preparedSpeechUrlRef.current) {
+              return;
+            }
+
+            setStatus("I got it");
+            setActiveState(MASCOT_STATES.I_GOT_IT);
+          })();
           return;
         }
 
@@ -176,29 +234,106 @@ export default function App() {
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
+    speechFetchControllerRef.current?.abort();
+    speechFetchControllerRef.current = null;
+    speechPreparePromiseRef.current = null;
+    if (preparedSpeechUrlRef.current) {
+      URL.revokeObjectURL(preparedSpeechUrlRef.current);
+      preparedSpeechUrlRef.current = "";
+    }
+    preparedSpeechTextRef.current = "";
   }
 
   function syncVideoPlaybackState() {
-    const idleVideo = videoRefs.current[MASCOT_STATES.IDLE];
-    const thinkingVideo = videoRefs.current[MASCOT_STATES.THINKING];
-    const speakingVideo = videoRefs.current[MASCOT_STATES.SPEAKING];
-
-    if (idleVideo) {
-      idleVideo.muted = !(activeState === MASCOT_STATES.IDLE && isAudioPrimedRef.current);
-      if (activeState === MASCOT_STATES.IDLE) {
-        idleVideo.currentTime = 0;
-        idleVideo.play().catch((error) => {
-          console.log("[mascot] idle video play blocked", error);
-        });
+    Object.entries(videoRefs.current).forEach(([state, video]) => {
+      if (!video) {
+        return;
       }
+
+      const isActive = activeState === state;
+      const shouldLoop = LOOPING_STATES.has(state);
+      const shouldMute =
+        state !== MASCOT_STATES.IDLE || !isActive || !isAudioPrimedRef.current;
+
+      video.loop = shouldLoop;
+      video.muted = shouldMute;
+
+      if (!isActive) {
+        video.pause();
+        video.currentTime = 0;
+        return;
+      }
+
+      video.currentTime = 0;
+      video.play().catch((error) => {
+        console.log(`[mascot] ${state} video play blocked`, error);
+      });
+    });
+  }
+
+  async function prepareSpeechAudio(text) {
+    if (!text) {
+      return;
     }
 
-    if (thinkingVideo) {
-      thinkingVideo.muted = true;
+    if (preparedSpeechTextRef.current === text && preparedSpeechUrlRef.current) {
+      return;
     }
 
-    if (speakingVideo) {
-      speakingVideo.muted = true;
+    if (preparedSpeechTextRef.current === text && speechPreparePromiseRef.current) {
+      await speechPreparePromiseRef.current;
+      return;
+    }
+
+    speechFetchControllerRef.current?.abort();
+    speechFetchControllerRef.current = null;
+    if (preparedSpeechUrlRef.current) {
+      URL.revokeObjectURL(preparedSpeechUrlRef.current);
+      preparedSpeechUrlRef.current = "";
+    }
+
+    const controller = new AbortController();
+    speechFetchControllerRef.current = controller;
+
+    console.log("[mascot] prepare speech audio", text);
+    preparedSpeechTextRef.current = text;
+    const preparePromise = (async () => {
+      const response = await fetch(
+        `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`,
+        { signal: controller.signal }
+      );
+
+      if (!response.ok) {
+        throw new Error(`TTS prefetch failed: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      if (speechFetchControllerRef.current !== controller) {
+        return;
+      }
+
+      preparedSpeechUrlRef.current = URL.createObjectURL(blob);
+      speechFetchControllerRef.current = null;
+      console.log("[mascot] speech audio prepared");
+    })();
+
+    speechPreparePromiseRef.current = preparePromise;
+
+    try {
+      await preparePromise;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        console.log("[mascot] speech audio prefetch aborted");
+        return;
+      }
+
+      console.log("[mascot] speech audio prefetch failed", error);
+      preparedSpeechTextRef.current = "";
+      speechFetchControllerRef.current = null;
+    } finally {
+      if (speechPreparePromiseRef.current === preparePromise) {
+        speechPreparePromiseRef.current = null;
+      }
     }
   }
 
@@ -214,9 +349,20 @@ export default function App() {
 
     const text = pendingSpeechRef.current;
     console.log("[mascot] try play pending speech", text);
-    stopAudio();
     setStatus("Preparing audio stream");
-    audio.src = `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`;
+
+    if (preparedSpeechTextRef.current !== text || !preparedSpeechUrlRef.current) {
+      await prepareSpeechAudio(text);
+    }
+
+    if (!preparedSpeechUrlRef.current) {
+      setStatus("Audio stream failed");
+      setActiveState(MASCOT_STATES.IDLE);
+      return;
+    }
+
+    audio.muted = false;
+    audio.src = preparedSpeechUrlRef.current;
 
     try {
       await audio.play();
@@ -229,15 +375,6 @@ export default function App() {
         setShowAudioUnlock(true);
       }
     }
-  }
-
-  function playSpeech(text) {
-    if (!text) {
-      setActiveState(MASCOT_STATES.IDLE);
-      return;
-    }
-    pendingSpeechRef.current = text;
-    void tryPlayPendingSpeech();
   }
 
   function showAssistantMessage(fullText) {
@@ -265,12 +402,23 @@ export default function App() {
       return;
     }
 
-    stopAudio();
     setStatus("Preparing audio stream");
-    audio.muted = false;
-    audio.src = `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`;
+    if (preparedSpeechTextRef.current !== text || !preparedSpeechUrlRef.current) {
+      await prepareSpeechAudio(text);
+    }
+
+    if (!preparedSpeechUrlRef.current) {
+      setStatus("Audio stream failed");
+      if (pendingAssistantMessageRef.current) {
+        showAssistantMessage(pendingAssistantMessageRef.current);
+        pendingAssistantMessageRef.current = "";
+      }
+      return;
+    }
 
     try {
+      audio.muted = false;
+      audio.src = preparedSpeechUrlRef.current;
       await audio.play();
       isAudioPrimedRef.current = true;
       pendingSpeechRef.current = "";
@@ -299,9 +447,31 @@ export default function App() {
             className={`mascot-video ${activeState === state ? "is-visible" : ""}`}
             src={src}
             autoPlay
-            loop
+            loop={LOOPING_STATES.has(state)}
             muted={state !== MASCOT_STATES.IDLE}
             playsInline
+            onEnded={() => {
+              if (activeState !== state) {
+                return;
+              }
+
+              if (state === MASCOT_STATES.I_GOT_IT) {
+                console.log("[mascot] i_got_it ended, start speech");
+                if (!pendingSpeechRef.current) {
+                  setStatus("Idle");
+                  setActiveState(MASCOT_STATES.IDLE);
+                  return;
+                }
+                void tryPlayPendingSpeech();
+                return;
+              }
+
+              if (state === MASCOT_STATES.THANKS_FOR_LISTENING) {
+                console.log("[mascot] thanks_for_listening ended, back to idle");
+                setStatus("Idle");
+                setActiveState(MASCOT_STATES.IDLE);
+              }
+            }}
           />
         ))}
       </div>
@@ -337,11 +507,13 @@ export default function App() {
         }}
         onEnded={() => {
           console.log("[mascot] audio onEnded");
-          setStatus("Idle");
-          setActiveState(MASCOT_STATES.IDLE);
+          setStatus("Thanks for listening");
+          setActiveState(MASCOT_STATES.THANKS_FOR_LISTENING);
         }}
         onError={(event) => {
           console.log("[mascot] audio onError", event);
+          pendingAssistantMessageRef.current = "";
+          pendingSpeechRef.current = "";
           setStatus("Audio stream failed");
           setActiveState(MASCOT_STATES.IDLE);
         }}

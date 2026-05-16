@@ -39,6 +39,23 @@ export default function App() {
   const lastSentVoiceTranscriptRef = useRef("");
   const sessionId = useMemo(() => createSessionId(), []);
 
+  async function publishMascotEvent(name, data = {}) {
+    const response = await fetch(`${API_BASE_URL}/api/realtime/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        data: {
+          sessionId,
+          createdAt: new Date().toISOString(),
+          ...data
+        }
+      })
+    });
+
+    await ensureOkResponse(response, `publish ${name}`);
+  }
+
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -125,19 +142,9 @@ export default function App() {
 
     try {
       console.log("[controller] optimistic thinking", { sessionId });
-      const publishResponse = await fetch(`${API_BASE_URL}/api/realtime/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: EVENTS.SET_THINKING,
-          data: {
-            sessionId,
-            createdAt: new Date().toISOString(),
-            optimistic: true
-          }
-        })
+      await publishMascotEvent(EVENTS.SET_THINKING, {
+        optimistic: true
       });
-      await ensureOkResponse(publishResponse, "realtime publish");
 
       console.log("[controller] requesting stop", { sessionId });
       const stopResponse = await fetch(`${API_BASE_URL}/api/stop`, {
@@ -197,6 +204,7 @@ export default function App() {
 
     if (isListening) {
       console.log("[controller] stop voice input");
+      clearAutoSendTimer();
       recognitionRef.current?.stop();
       setIsListening(false);
       return;
@@ -215,18 +223,31 @@ export default function App() {
       console.log("[controller] voice input started");
       setError("");
       setIsListening(true);
+      void publishMascotEvent(EVENTS.SET_LISTENING).catch((publishError) => {
+        console.log("[controller] publish listening error", publishError);
+      });
     };
 
     recognition.onend = () => {
       console.log("[controller] voice input ended");
       clearAutoSendTimer();
       setIsListening(false);
+
+      if (!voiceSendLockedRef.current) {
+        void publishMascotEvent(EVENTS.SET_IDLE).catch((publishError) => {
+          console.log("[controller] publish idle error", publishError);
+        });
+      }
     };
 
     recognition.onerror = (event) => {
       console.log("[controller] voice input error", event.error);
       setError(`Voice input failed: ${event.error}`);
       setIsListening(false);
+      clearAutoSendTimer();
+      void publishMascotEvent(EVENTS.SET_IDLE).catch((publishError) => {
+        console.log("[controller] publish idle error", publishError);
+      });
     };
 
     recognition.onresult = (event) => {
