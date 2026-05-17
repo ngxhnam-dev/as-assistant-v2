@@ -49,8 +49,6 @@ export default function App() {
   const isAudioPrimedRef = useRef(false);
   const pendingAssistantMessageRef = useRef("");
   const preparedSpeechTextRef = useRef("");
-  const preparedSpeechUrlRef = useRef("");
-  const speechFetchControllerRef = useRef(null);
   const speechPreparePromiseRef = useRef(null);
 
   useEffect(() => {
@@ -165,7 +163,7 @@ export default function App() {
           void (async () => {
             await prepareSpeechAudio(text);
 
-            if (pendingSpeechRef.current !== text || !preparedSpeechUrlRef.current) {
+            if (pendingSpeechRef.current !== text || preparedSpeechTextRef.current !== text) {
               return;
             }
 
@@ -234,13 +232,7 @@ export default function App() {
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
-    speechFetchControllerRef.current?.abort();
-    speechFetchControllerRef.current = null;
     speechPreparePromiseRef.current = null;
-    if (preparedSpeechUrlRef.current) {
-      URL.revokeObjectURL(preparedSpeechUrlRef.current);
-      preparedSpeechUrlRef.current = "";
-    }
     preparedSpeechTextRef.current = "";
   }
 
@@ -272,11 +264,14 @@ export default function App() {
   }
 
   async function prepareSpeechAudio(text) {
-    if (!text) {
+    const audio = audioRef.current;
+    if (!audio || !text) {
       return;
     }
 
-    if (preparedSpeechTextRef.current === text && preparedSpeechUrlRef.current) {
+    const streamUrl = `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`;
+
+    if (preparedSpeechTextRef.current === text && audio.src === streamUrl && audio.readyState >= 2) {
       return;
     }
 
@@ -285,36 +280,42 @@ export default function App() {
       return;
     }
 
-    speechFetchControllerRef.current?.abort();
-    speechFetchControllerRef.current = null;
-    if (preparedSpeechUrlRef.current) {
-      URL.revokeObjectURL(preparedSpeechUrlRef.current);
-      preparedSpeechUrlRef.current = "";
-    }
-
-    const controller = new AbortController();
-    speechFetchControllerRef.current = controller;
-
     console.log("[mascot] prepare speech audio", text);
     preparedSpeechTextRef.current = text;
     const preparePromise = (async () => {
-      const response = await fetch(
-        `${API_BASE_URL}/api/tts/stream?text=${encodeURIComponent(text)}`,
-        { signal: controller.signal }
-      );
+      audio.pause();
+      audio.muted = false;
+      audio.src = streamUrl;
 
-      if (!response.ok) {
-        throw new Error(`TTS prefetch failed: ${response.status} ${response.statusText}`);
-      }
+      await new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while preparing streaming audio."));
+        }, 15000);
 
-      const blob = await response.blob();
-      if (speechFetchControllerRef.current !== controller) {
-        return;
-      }
+        const handleReady = () => {
+          cleanup();
+          console.log("[mascot] streaming audio ready");
+          resolve();
+        };
 
-      preparedSpeechUrlRef.current = URL.createObjectURL(blob);
-      speechFetchControllerRef.current = null;
-      console.log("[mascot] speech audio prepared");
+        const handleError = () => {
+          cleanup();
+          reject(new Error("Streaming audio failed to prepare."));
+        };
+
+        const cleanup = () => {
+          window.clearTimeout(timeoutId);
+          audio.removeEventListener("canplay", handleReady);
+          audio.removeEventListener("loadeddata", handleReady);
+          audio.removeEventListener("error", handleError);
+        };
+
+        audio.addEventListener("canplay", handleReady, { once: true });
+        audio.addEventListener("loadeddata", handleReady, { once: true });
+        audio.addEventListener("error", handleError, { once: true });
+        audio.load();
+      });
     })();
 
     speechPreparePromiseRef.current = preparePromise;
@@ -322,14 +323,8 @@ export default function App() {
     try {
       await preparePromise;
     } catch (error) {
-      if (error.name === "AbortError") {
-        console.log("[mascot] speech audio prefetch aborted");
-        return;
-      }
-
-      console.log("[mascot] speech audio prefetch failed", error);
+      console.log("[mascot] speech audio prepare failed", error);
       preparedSpeechTextRef.current = "";
-      speechFetchControllerRef.current = null;
     } finally {
       if (speechPreparePromiseRef.current === preparePromise) {
         speechPreparePromiseRef.current = null;
@@ -351,18 +346,17 @@ export default function App() {
     console.log("[mascot] try play pending speech", text);
     setStatus("Preparing audio stream");
 
-    if (preparedSpeechTextRef.current !== text || !preparedSpeechUrlRef.current) {
+    if (preparedSpeechTextRef.current !== text || audio.readyState < 2) {
       await prepareSpeechAudio(text);
     }
 
-    if (!preparedSpeechUrlRef.current) {
+    if (preparedSpeechTextRef.current !== text) {
       setStatus("Audio stream failed");
       setActiveState(MASCOT_STATES.IDLE);
       return;
     }
 
     audio.muted = false;
-    audio.src = preparedSpeechUrlRef.current;
 
     try {
       await audio.play();
@@ -403,11 +397,11 @@ export default function App() {
     }
 
     setStatus("Preparing audio stream");
-    if (preparedSpeechTextRef.current !== text || !preparedSpeechUrlRef.current) {
+    if (preparedSpeechTextRef.current !== text || audio.readyState < 2) {
       await prepareSpeechAudio(text);
     }
 
-    if (!preparedSpeechUrlRef.current) {
+    if (preparedSpeechTextRef.current !== text) {
       setStatus("Audio stream failed");
       if (pendingAssistantMessageRef.current) {
         showAssistantMessage(pendingAssistantMessageRef.current);
@@ -418,7 +412,6 @@ export default function App() {
 
     try {
       audio.muted = false;
-      audio.src = preparedSpeechUrlRef.current;
       await audio.play();
       isAudioPrimedRef.current = true;
       pendingSpeechRef.current = "";
@@ -492,7 +485,7 @@ export default function App() {
       ) : null}
       <audio
         ref={audioRef}
-        preload="none"
+        preload="auto"
         onPlay={() => {
           console.log("[mascot] audio onPlay");
         }}

@@ -6,7 +6,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Readable } from "node:stream";
 import { WebSocketServer } from "ws";
-import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { EVENTS } from "@assistant/shared";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,9 +34,6 @@ for (const key of requiredEnv) {
 const activeRequests = new Map();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: wsPath });
-const elevenlabs = new ElevenLabsClient({
-  apiKey: process.env.ELEVENLABS_API_KEY
-});
 const allowedOrigins = new Set(
   [
     process.env.MASCOT_ORIGIN,
@@ -98,7 +94,13 @@ app.post("/api/stop", async (req, res) => {
   });
 
   if (sessionId && activeRequests.has(sessionId)) {
-    activeRequests.get(sessionId).abort();
+    const activeRequest = activeRequests.get(sessionId);
+    activeRequest.controller.abort();
+    if (activeRequest.taskId) {
+      void stopDifyTask(activeRequest.taskId).catch((error) => {
+        console.error("[stop] unable to stop dify task", error);
+      });
+    }
     activeRequests.delete(sessionId);
   }
 
@@ -126,13 +128,22 @@ app.post("/api/chat", async (req, res) => {
   }
 
   if (sessionId && activeRequests.has(sessionId)) {
-    activeRequests.get(sessionId).abort();
+    const activeRequest = activeRequests.get(sessionId);
+    activeRequest.controller.abort();
+    if (activeRequest.taskId) {
+      void stopDifyTask(activeRequest.taskId).catch((error) => {
+        console.error("[chat] unable to stop previous dify task", error);
+      });
+    }
     activeRequests.delete(sessionId);
   }
 
   const controller = new AbortController();
   if (sessionId) {
-    activeRequests.set(sessionId, controller);
+    activeRequests.set(sessionId, {
+      controller,
+      taskId: null
+    });
   }
 
   try {
@@ -147,10 +158,31 @@ app.post("/api/chat", async (req, res) => {
       createdAt: new Date().toISOString()
     });
 
-    const difyResponse = await callDify({
+    const difyResponse = await callDifyStreaming({
       message,
       conversationId,
-      signal: controller.signal
+      signal: controller.signal,
+      onTaskId(taskId) {
+        if (!sessionId || !activeRequests.has(sessionId)) {
+          return;
+        }
+
+        const activeRequest = activeRequests.get(sessionId);
+        activeRequests.set(sessionId, {
+          ...activeRequest,
+          taskId
+        });
+      },
+      onPartial({ text, conversationId: nextConversationId, taskId, messageId }) {
+        publishEvent(EVENTS.PARTIAL_RESPONSE, {
+          sessionId,
+          text,
+          conversationId: nextConversationId || null,
+          taskId: taskId || null,
+          messageId: messageId || null,
+          createdAt: new Date().toISOString()
+        });
+      }
     });
 
     if (sessionId) {
@@ -216,30 +248,42 @@ app.get("/api/tts/stream", async (req, res) => {
       dictionaryId && dictionaryVersionId
         ? [
             {
-              pronunciationDictionaryId: dictionaryId,
-              versionId: dictionaryVersionId
+              pronunciation_dictionary_id: dictionaryId,
+              version_id: dictionaryVersionId
             }
           ]
         : undefined;
 
-    const { data, rawResponse } = await elevenlabs.textToSpeech
-      .convert(voiceId, {
-        text,
-        modelId,
-        outputFormat: "mp3_44100_128",
-        pronunciationDictionaryLocators
-      })
-      .withRawResponse();
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": process.env.ELEVENLABS_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text,
+          model_id: modelId,
+          pronunciation_dictionary_locators: pronunciationDictionaryLocators
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`ElevenLabs error ${response.status}: ${details}`);
+    }
 
     console.log("[tts] elevenlabs metadata", {
-      requestId: rawResponse.headers.get("request-id"),
+      requestId: response.headers.get("request-id"),
       dictionaryId: dictionaryId || null,
       dictionaryVersionId: dictionaryVersionId || null
     });
 
-    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Type", response.headers.get("content-type") || "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
-    await pipeElevenLabsAudio(data, res);
+    await pipeElevenLabsAudio(response.body, res);
   } catch (error) {
     console.error("[tts/stream]", error);
     res.status(500).json({
@@ -302,7 +346,13 @@ function publishEvent(name, data) {
   }
 }
 
-async function callDify({ message, conversationId, signal }) {
+async function callDifyStreaming({
+  message,
+  conversationId,
+  signal,
+  onPartial,
+  onTaskId
+}) {
   const baseUrl = process.env.DIFY_BASE_URL.replace(/\/$/, "");
   const response = await fetch(`${baseUrl}/chat-messages`, {
     method: "POST",
@@ -314,7 +364,7 @@ async function callDify({ message, conversationId, signal }) {
     body: JSON.stringify({
       inputs: {},
       query: message,
-      response_mode: "blocking",
+      response_mode: "streaming",
       conversation_id: conversationId || undefined,
       user: process.env.DIFY_USER || "mascot-controller"
     })
@@ -325,7 +375,118 @@ async function callDify({ message, conversationId, signal }) {
     throw new Error(`Dify error ${response.status}: ${details}`);
   }
 
-  return response.json();
+  if (!response.body) {
+    throw new Error("Dify returned an empty stream.");
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  let answer = "";
+  let nextConversationId = conversationId || null;
+  let taskId = null;
+  let messageId = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let boundaryIndex = buffer.indexOf("\n\n");
+
+    while (boundaryIndex !== -1) {
+      const rawEvent = buffer.slice(0, boundaryIndex).trim();
+      buffer = buffer.slice(boundaryIndex + 2);
+
+      if (rawEvent) {
+        const payload = parseSsePayload(rawEvent);
+
+        if (payload?.event === "error") {
+          throw new Error(payload.message || "Dify streaming error.");
+        }
+
+        if (payload?.task_id) {
+          taskId = payload.task_id;
+          onTaskId?.(taskId);
+        }
+
+        if (payload?.conversation_id) {
+          nextConversationId = payload.conversation_id;
+        }
+
+        if (payload?.message_id) {
+          messageId = payload.message_id;
+        }
+
+        if (typeof payload?.answer === "string" && payload.answer) {
+          if (payload.answer.startsWith(answer)) {
+            answer = payload.answer;
+          } else {
+            answer += payload.answer;
+          }
+
+          onPartial?.({
+            text: answer,
+            conversationId: nextConversationId,
+            taskId,
+            messageId
+          });
+        }
+      }
+
+      boundaryIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  return {
+    answer: answer.trim(),
+    conversation_id: nextConversationId,
+    task_id: taskId,
+    message_id: messageId
+  };
+}
+
+function parseSsePayload(rawEvent) {
+  const dataLines = rawEvent
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim());
+
+  if (!dataLines.length) {
+    return null;
+  }
+
+  const payload = dataLines.join("\n");
+  if (!payload || payload === "[DONE]") {
+    return null;
+  }
+
+  return JSON.parse(payload);
+}
+
+async function stopDifyTask(taskId) {
+  if (!taskId) {
+    return;
+  }
+
+  const baseUrl = process.env.DIFY_BASE_URL.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/chat-messages/${taskId}/stop`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.DIFY_API_KEY}`
+    },
+    body: JSON.stringify({
+      user: process.env.DIFY_USER || "mascot-controller"
+    })
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Dify stop error ${response.status}: ${details}`);
+  }
 }
 
 function isAllowedLanOrigin(origin) {

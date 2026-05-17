@@ -20,9 +20,25 @@ const initialMessages = [
   {
     id: "intro",
     role: "assistant",
-    text: "Mascot controller ready. Send a message or use voice input."
+    text: "Em là Little Nurse, rất vui được giúp đỡ anh chị ạ."
   }
 ];
+
+function upsertPartialAssistant(messages, text) {
+  const next = messages.filter((message) => message.role !== "typing");
+  if (!text) {
+    return next;
+  }
+
+  return [
+    ...next,
+    {
+      id: "partial-assistant",
+      role: "typing",
+      text
+    }
+  ];
+}
 
 export default function App() {
   const [messages, setMessages] = useState(initialMessages);
@@ -97,13 +113,19 @@ export default function App() {
         if (type === EVENTS.SEND_RESPONSE) {
           setConversationId(data?.conversationId || null);
           setMessages((current) => [
-            ...current,
+            ...current.filter((message) => message.role !== "typing"),
             {
               id: createClientId(),
               role: "assistant",
               text: data?.text || ""
             }
           ]);
+          return;
+        }
+
+        if (type === EVENTS.PARTIAL_RESPONSE) {
+          setConversationId(data?.conversationId || null);
+          setMessages((current) => upsertPartialAssistant(current, data?.text || ""));
           return;
         }
 

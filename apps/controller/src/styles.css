@@ -70,6 +70,7 @@ body {
 
 .message p {
   margin: 0;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -83,6 +84,15 @@ body {
   justify-self: start;
   background: linear-gradient(180deg, #24247b, #1d3cbf);
   color: #ffffff;
+}
+
+.message.typing {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  background: transparent;
+  color: #24247b;
+  box-shadow: none;
 }
 
 .message.system {
