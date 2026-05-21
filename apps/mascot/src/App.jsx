@@ -3,18 +3,33 @@ import { EVENTS, MASCOT_STATES, createClientId } from "@assistant/shared";
 
 const DEFAULT_HOST =
   typeof window !== "undefined" ? window.location.hostname : "localhost";
+const DEFAULT_PORT =
+  typeof window !== "undefined" ? window.location.port : "";
 const DEFAULT_PROTOCOL =
   typeof window !== "undefined" && window.location.protocol === "https:"
     ? "https"
     : "http";
 const DEFAULT_WS_PROTOCOL = DEFAULT_PROTOCOL === "https" ? "wss" : "ws";
+const DEFAULT_ORIGIN =
+  typeof window !== "undefined"
+    ? window.location.origin
+    : `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}${DEFAULT_PORT ? `:${DEFAULT_PORT}` : ""}`;
+const DEFAULT_API_BASE_URL =
+  DEFAULT_PROTOCOL === "https" ? DEFAULT_ORIGIN : `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
+const DEFAULT_WS_URL =
+  DEFAULT_PROTOCOL === "https"
+    ? `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}${DEFAULT_PORT ? `:${DEFAULT_PORT}` : ""}/ws`
+    : `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
-const WS_URL =
-  import.meta.env.VITE_WS_URL || `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
+  import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
+const IDLE_VIDEO_SOURCES = [
+  "/video/Acnes.mp4",
+  "/video/Remos.mp4",
+  "/video/LipIce.mp4"
+];
 const LOOPING_STATES = new Set([
-  MASCOT_STATES.IDLE,
   MASCOT_STATES.LISTENING,
   MASCOT_STATES.THINKING,
   MASCOT_STATES.SPEAKING
@@ -22,7 +37,7 @@ const LOOPING_STATES = new Set([
 
 const VIDEO_SOURCES = {
   [MASCOT_STATES.IDLE]:
-    "/video/idle.mp4",
+    IDLE_VIDEO_SOURCES[0],
   [MASCOT_STATES.LISTENING]:
     "/video/listening.mp4",
   [MASCOT_STATES.THINKING]:
@@ -38,9 +53,10 @@ const VIDEO_SOURCES = {
 export default function App() {
   const [status, setStatus] = useState("Waiting for audio unlock");
   const [activeState, setActiveState] = useState(MASCOT_STATES.IDLE);
+  const [idleVideoIndex, setIdleVideoIndex] = useState(0);
   const [lastText, setLastText] = useState("");
   const [messages, setMessages] = useState([]);
-  const [showAudioUnlock, setShowAudioUnlock] = useState(false);
+  const [showAudioUnlock, setShowAudioUnlock] = useState(true);
   const audioRef = useRef(null);
   const wsRef = useRef(null);
   const historyRef = useRef(null);
@@ -62,26 +78,7 @@ export default function App() {
 
   useEffect(() => {
     syncVideoPlaybackState();
-  }, [activeState]);
-
-  useEffect(() => {
-    attemptAudioPrime();
-
-    const activateAudio = () => {
-      attemptAudioPrime();
-      void tryPlayPendingSpeech();
-    };
-
-    window.addEventListener("pointerdown", activateAudio, { passive: true });
-    window.addEventListener("keydown", activateAudio);
-    window.addEventListener("touchstart", activateAudio, { passive: true });
-
-    return () => {
-      window.removeEventListener("pointerdown", activateAudio);
-      window.removeEventListener("keydown", activateAudio);
-      window.removeEventListener("touchstart", activateAudio);
-    };
-  }, []);
+  }, [activeState, idleVideoIndex]);
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
@@ -192,35 +189,6 @@ export default function App() {
     };
   }, [WS_URL]);
 
-  async function attemptAudioPrime() {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-
-    if (isAudioPrimedRef.current) {
-      return;
-    }
-
-    console.log("[mascot] attempt audio prime");
-
-    audio.muted = true;
-    try {
-      await audio.play();
-      isAudioPrimedRef.current = true;
-      setShowAudioUnlock(false);
-      console.log("[mascot] audio primed");
-      setStatus("Audio ready");
-    } catch (error) {
-      console.log("[mascot] audio prime blocked", error);
-      setStatus("Audio waiting for browser permission");
-    } finally {
-      audio.pause();
-      audio.currentTime = 0;
-      audio.muted = false;
-    }
-  }
-
   function stopAudio() {
     const audio = audioRef.current;
     if (!audio) {
@@ -234,6 +202,12 @@ export default function App() {
     audio.load();
     speechPreparePromiseRef.current = null;
     preparedSpeechTextRef.current = "";
+  }
+
+  function markAudioUnlocked() {
+    isAudioPrimedRef.current = true;
+    setShowAudioUnlock(false);
+    syncVideoPlaybackState();
   }
 
   function syncVideoPlaybackState() {
@@ -360,8 +334,8 @@ export default function App() {
 
     try {
       await audio.play();
+      markAudioUnlocked();
       pendingSpeechRef.current = "";
-      setShowAudioUnlock(false);
     } catch (error) {
       console.log("[mascot] pending speech blocked", error);
       setStatus("Audio waiting for browser permission");
@@ -392,7 +366,8 @@ export default function App() {
     const audio = audioRef.current;
     const text = pendingSpeechRef.current;
     if (!audio || !text) {
-      await attemptAudioPrime();
+      markAudioUnlocked();
+      setStatus("Audio ready");
       return;
     }
 
@@ -413,9 +388,8 @@ export default function App() {
     try {
       audio.muted = false;
       await audio.play();
-      isAudioPrimedRef.current = true;
+      markAudioUnlocked();
       pendingSpeechRef.current = "";
-      setShowAudioUnlock(false);
     } catch (error) {
       console.log("[mascot] manual unlock play failed", error);
       setStatus("Audio waiting for browser permission");
@@ -438,7 +412,7 @@ export default function App() {
               }
             }}
             className={`mascot-video ${activeState === state ? "is-visible" : ""}`}
-            src={src}
+            src={state === MASCOT_STATES.IDLE ? IDLE_VIDEO_SOURCES[idleVideoIndex] : src}
             autoPlay
             loop={LOOPING_STATES.has(state)}
             muted={state !== MASCOT_STATES.IDLE}
@@ -459,6 +433,12 @@ export default function App() {
                 return;
               }
 
+              if (state === MASCOT_STATES.IDLE) {
+                console.log("[mascot] idle ended, switch to next idle video");
+                setIdleVideoIndex((current) => (current + 1) % IDLE_VIDEO_SOURCES.length);
+                return;
+              }
+
               if (state === MASCOT_STATES.THANKS_FOR_LISTENING) {
                 console.log("[mascot] thanks_for_listening ended, back to idle");
                 setStatus("Idle");
@@ -471,12 +451,14 @@ export default function App() {
       <div className="logo">
         <img src="/image/logo metholatum.png" />
       </div>
-      <div className="chat-history" ref={historyRef}>
-        {messages.map((message) => (
-          <article key={message.id} className={`history-message ${message.role}`}>
-            <p>{message.text}</p>
-          </article>
-        ))}
+      <div className="chat-history-container">
+        <div className="chat-history" ref={historyRef}>
+          {messages.map((message) => (
+            <article key={message.id} className={`history-message ${message.role}`}>
+              <p>{message.text}</p>
+            </article>
+          ))}
+        </div>
       </div>
       {showAudioUnlock ? (
         <button type="button" className="audio-unlock-button" onClick={handleAudioUnlock}>

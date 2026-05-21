@@ -1,18 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EVENTS, createClientId, createSessionId } from "@assistant/shared";
+import { normalizeBrandTranscript } from "./brand-normalization";
 
 const DEFAULT_HOST =
   typeof window !== "undefined" ? window.location.hostname : "localhost";
+const DEFAULT_PORT =
+  typeof window !== "undefined" ? window.location.port : "";
 const DEFAULT_PROTOCOL =
   typeof window !== "undefined" && window.location.protocol === "https:"
     ? "https"
     : "http";
 const DEFAULT_WS_PROTOCOL = DEFAULT_PROTOCOL === "https" ? "wss" : "ws";
+const DEFAULT_ORIGIN =
+  typeof window !== "undefined"
+    ? window.location.origin
+    : `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}${DEFAULT_PORT ? `:${DEFAULT_PORT}` : ""}`;
+const DEFAULT_API_BASE_URL =
+  DEFAULT_PROTOCOL === "https" ? DEFAULT_ORIGIN : `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
+const DEFAULT_WS_URL =
+  DEFAULT_PROTOCOL === "https"
+    ? `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}${DEFAULT_PORT ? `:${DEFAULT_PORT}` : ""}/ws`
+    : `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || `${DEFAULT_PROTOCOL}://${DEFAULT_HOST}:8787`;
-const WS_URL =
-  import.meta.env.VITE_WS_URL || `${DEFAULT_WS_PROTOCOL}://${DEFAULT_HOST}:8787/ws`;
+  import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
+const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
 const SpeechRecognition =
   window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -287,9 +299,14 @@ export default function App() {
         return;
       }
 
-      console.log("[controller] voice transcript", latestTranscript);
-      transcriptRef.current = latestTranscript;
-      setInput(latestTranscript);
+      const normalizedTranscript = normalizeBrandTranscript(latestTranscript);
+
+      console.log("[controller] voice transcript", {
+        raw: latestTranscript,
+        normalized: normalizedTranscript
+      });
+      transcriptRef.current = normalizedTranscript;
+      setInput(normalizedTranscript);
       scheduleAutoSend();
     };
 
@@ -391,16 +408,20 @@ export default function App() {
           }}
         >
           <div className="voice-button-wrap">
+            <div></div>
             <button
               type="button"
               className={`voice-button ${isListening ? "is-live" : ""}`}
               onClick={toggleVoiceInput}
-              aria-label={isListening ? "Dang nghe" : "Voice chat"}
+              aria-label={isListening ? "Listening" : "Voice chat"}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.93V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.07A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 1 0 10 0Z" />
               </svg>
             </button>
+            <button type="button" className="skip-button" onClick={skipVoice}>
+            Skip voice
+          </button>
           </div>
           <div className="composer-input">
             <textarea
@@ -416,12 +437,9 @@ export default function App() {
               }}
             />
             <button type="submit" className="send-button" disabled={isSending}>
-              {isSending ? "Dang gui..." : "Gui"}
+              {isSending ? "Sending..." : "Send"}
             </button>
           </div>
-          <button type="button" className="skip-button" onClick={skipVoice}>
-            Skip voice
-          </button>
         </form>
 
         {error ? <p className="error-banner">{error}</p> : null}

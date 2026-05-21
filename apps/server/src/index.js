@@ -1,4 +1,5 @@
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -505,6 +506,44 @@ function isAllowedLanOrigin(origin) {
   }
 }
 
+function getServerHosts() {
+  const networkInterfaces = os.networkInterfaces();
+  const preferredHosts = new Set();
+  const fallbackHosts = new Set();
+
+  for (const [interfaceName, addresses] of Object.entries(networkInterfaces)) {
+    if (!addresses) {
+      continue;
+    }
+
+    for (const address of addresses) {
+      if (address.family !== "IPv4" || address.internal) {
+        continue;
+      }
+
+      const isVirtualInterface =
+        /docker|wsl|hyper-v|vethernet|vmware|virtualbox|loopback|teredo/i.test(interfaceName);
+
+      if (isVirtualInterface) {
+        fallbackHosts.add(address.address);
+        continue;
+      }
+
+      preferredHosts.add(address.address);
+    }
+  }
+
+  if (preferredHosts.size) {
+    return Array.from(preferredHosts);
+  }
+
+  if (fallbackHosts.size) {
+    return Array.from(fallbackHosts);
+  }
+
+  return ["localhost"];
+}
+
 wss.on("connection", (socket) => {
   console.log("[ws] client connected", { clients: wss.clients.size });
 
@@ -525,6 +564,10 @@ wss.on("connection", (socket) => {
 });
 
 server.listen(port, () => {
-  console.log(`[server] listening on http://localhost:${port}`);
-  console.log(`[server] websocket available at ws://localhost:${port}${wsPath}`);
+  const hosts = getServerHosts();
+
+  for (const host of hosts) {
+    console.log(`[server] listening on http://${host}:${port}`);
+    console.log(`[server] websocket available at ws://${host}:${port}${wsPath}`);
+  }
 });
