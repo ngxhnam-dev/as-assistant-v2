@@ -25,9 +25,11 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL;
 const WS_URL = import.meta.env.VITE_WS_URL || DEFAULT_WS_URL;
 const IDLE_VIDEO_SOURCES = [
+  "/video/Mentho.mp4",
   "/video/Acnes.mp4",
+  "/video/Selsun.mp4",
   "/video/Remos.mp4",
-  "/video/LipIce.mp4"
+  "/video/LipIce.mp4",
 ];
 const LOOPING_STATES = new Set([
   MASCOT_STATES.LISTENING,
@@ -39,15 +41,15 @@ const VIDEO_SOURCES = {
   [MASCOT_STATES.IDLE]:
     IDLE_VIDEO_SOURCES[0],
   [MASCOT_STATES.LISTENING]:
-    "/video/listening.mp4",
+    "/video/lang_nghe.mp4",
   [MASCOT_STATES.THINKING]:
-    "/video/thinking.mp4",
+    "/video/suy_nghi.mp4",
   [MASCOT_STATES.I_GOT_IT]:
-    "/video/i_got_it.mp4",
+    "/video/em_biet_roi.mp4",
   [MASCOT_STATES.THANKS_FOR_LISTENING]:
-    "/video/thanks_for_listening.mp4",
+    "/video/cam_on.mp4",
   [MASCOT_STATES.SPEAKING]:
-    "/video/speaking.mp4"
+    "/video/tra_loi.mp4"
 };
 
 export default function App() {
@@ -449,7 +451,7 @@ export default function App() {
         ))}
       </div>
       <div className="logo">
-        <img src="/image/logo metholatum.png" />
+        <img src="/image/rohto logo.png" />
       </div>
       <div className="chat-history-container">
         <div className="chat-history" ref={historyRef}>

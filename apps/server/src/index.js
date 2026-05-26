@@ -159,31 +159,10 @@ app.post("/api/chat", async (req, res) => {
       createdAt: new Date().toISOString()
     });
 
-    const difyResponse = await callDifyStreaming({
+    const difyResponse = await callDifyBlocking({
       message,
       conversationId,
-      signal: controller.signal,
-      onTaskId(taskId) {
-        if (!sessionId || !activeRequests.has(sessionId)) {
-          return;
-        }
-
-        const activeRequest = activeRequests.get(sessionId);
-        activeRequests.set(sessionId, {
-          ...activeRequest,
-          taskId
-        });
-      },
-      onPartial({ text, conversationId: nextConversationId, taskId, messageId }) {
-        publishEvent(EVENTS.PARTIAL_RESPONSE, {
-          sessionId,
-          text,
-          conversationId: nextConversationId || null,
-          taskId: taskId || null,
-          messageId: messageId || null,
-          createdAt: new Date().toISOString()
-        });
-      }
+      signal: controller.signal
     });
 
     if (sessionId) {
@@ -347,13 +326,7 @@ function publishEvent(name, data) {
   }
 }
 
-async function callDifyStreaming({
-  message,
-  conversationId,
-  signal,
-  onPartial,
-  onTaskId
-}) {
+async function callDifyBlocking({ message, conversationId, signal }) {
   const baseUrl = process.env.DIFY_BASE_URL.replace(/\/$/, "");
   const response = await fetch(`${baseUrl}/chat-messages`, {
     method: "POST",
@@ -365,9 +338,9 @@ async function callDifyStreaming({
     body: JSON.stringify({
       inputs: {},
       query: message,
-      response_mode: "streaming",
-      conversation_id: conversationId || undefined,
-      user: process.env.DIFY_USER || "mascot-controller"
+      response_mode: "blocking",
+      conversation_id: conversationId || "",
+      user: process.env.DIFY_USER || ""
     })
   });
 
@@ -376,95 +349,14 @@ async function callDifyStreaming({
     throw new Error(`Dify error ${response.status}: ${details}`);
   }
 
-  if (!response.body) {
-    throw new Error("Dify returned an empty stream.");
-  }
-
-  const decoder = new TextDecoder();
-  const reader = response.body.getReader();
-  let buffer = "";
-  let answer = "";
-  let nextConversationId = conversationId || null;
-  let taskId = null;
-  let messageId = null;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-    let boundaryIndex = buffer.indexOf("\n\n");
-
-    while (boundaryIndex !== -1) {
-      const rawEvent = buffer.slice(0, boundaryIndex).trim();
-      buffer = buffer.slice(boundaryIndex + 2);
-
-      if (rawEvent) {
-        const payload = parseSsePayload(rawEvent);
-
-        if (payload?.event === "error") {
-          throw new Error(payload.message || "Dify streaming error.");
-        }
-
-        if (payload?.task_id) {
-          taskId = payload.task_id;
-          onTaskId?.(taskId);
-        }
-
-        if (payload?.conversation_id) {
-          nextConversationId = payload.conversation_id;
-        }
-
-        if (payload?.message_id) {
-          messageId = payload.message_id;
-        }
-
-        if (typeof payload?.answer === "string" && payload.answer) {
-          if (payload.answer.startsWith(answer)) {
-            answer = payload.answer;
-          } else {
-            answer += payload.answer;
-          }
-
-          onPartial?.({
-            text: answer,
-            conversationId: nextConversationId,
-            taskId,
-            messageId
-          });
-        }
-      }
-
-      boundaryIndex = buffer.indexOf("\n\n");
-    }
-  }
+  const payload = await response.json();
 
   return {
-    answer: answer.trim(),
-    conversation_id: nextConversationId,
-    task_id: taskId,
-    message_id: messageId
+    answer: typeof payload?.answer === "string" ? payload.answer.trim() : "",
+    conversation_id: payload?.conversation_id || conversationId || null,
+    task_id: payload?.task_id || null,
+    message_id: payload?.message_id || null
   };
-}
-
-function parseSsePayload(rawEvent) {
-  const dataLines = rawEvent
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim());
-
-  if (!dataLines.length) {
-    return null;
-  }
-
-  const payload = dataLines.join("\n");
-  if (!payload || payload === "[DONE]") {
-    return null;
-  }
-
-  return JSON.parse(payload);
 }
 
 async function stopDifyTask(taskId) {
@@ -473,7 +365,7 @@ async function stopDifyTask(taskId) {
   }
 
   const baseUrl = process.env.DIFY_BASE_URL.replace(/\/$/, "");
-  const response = await fetch(`${baseUrl}/chat-messages/${taskId}/stop`, {
+  const response = await fetch(`${baseUrl}/chat-messages/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
